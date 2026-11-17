@@ -1016,16 +1016,21 @@ class AccountExportWorker(QThread):
                     saved=completed_media.get(key,"" )
                     saved_path=Path(saved) if saved else Path()
                     if saved and not saved_path.is_absolute(): saved_path=root/saved_path
+                    # Older v1.2.1 archives may contain images saved with the
+                    # wrong extension or HTML/error payloads. Never reuse them
+                    # as completed images: fall through to a verified redownload.
+                    if kind == "image" and saved and not image_file_is_valid(saved_path):
+                        saved = ""
                     if saved and saved_path.is_file():
                         source=saved_path
                         if source.resolve()!=target.resolve():
                             target=target.with_suffix(source.suffix)
                             if not target.exists(): shutil.copy2(source,target)
-                    elif target.is_file() and target.stat().st_size>0:
+                    elif target.is_file() and target.stat().st_size>0 and (kind != "image" or image_file_is_valid(target)):
                         pass
                     else:
                         prior=existing.get((pid,url),"")
-                        if prior and Path(prior).is_file():
+                        if prior and Path(prior).is_file() and (kind != "image" or image_file_is_valid(Path(prior))):
                             source=Path(prior); target=target.with_suffix(source.suffix)
                             shutil.copy2(source,target)
                         else:
