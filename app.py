@@ -527,7 +527,7 @@ class Settings:
             except Exception: pass
         try:
             import keyring
-            for key in ("socialdata_api_key", "twitterapis_api_key"):
+            for key in ("twitterapis_api_key",):
                 secret = keyring.get_password(APP_NAME, key)
                 if secret: self.data[key] = secret
         except Exception:
@@ -1092,25 +1092,25 @@ class AccountExportWorker(QThread):
 
 class SettingsDialog(QDialog):
     def __init__(self, settings: Settings, parent=None):
-        super().__init__(parent); self.setWindowTitle("Settings · API Providers & archive"); self.resize(700, 650); self.s=settings
+        super().__init__(parent); self.setWindowTitle("Settings · Browser scraper & fallback"); self.resize(700, 650); self.s=settings
         layout=QVBoxLayout(self)
-        intro=QLabel("Connect both providers. SocialData handles public profile/timeline discovery; TwitterAPIs handles public timelines and account-scoped bookmarks/likes when a session is registered with that provider.")
+        intro=QLabel("Playwright with Edge/Chrome is the primary scraper for public profiles and timelines. Sign in directly in the browser window if X requests it. TwitterAPIs is retained as a fallback and for supported account collections.")
         intro.setWordWrap(True); intro.setStyleSheet("color:#aab0b6;padding:4px 2px 10px;"); layout.addWidget(intro)
         form=QFormLayout(); layout.addLayout(form)
         self.fields={}
-        entries=[("socialdata_api_key","SocialData API key"),("twitterapis_api_key","TwitterAPIs API key"),("socialdata_base","SocialData API base"),("twitterapis_base","TwitterAPIs API base"),("download_dir","Download directory")]
+        entries=[("twitterapis_api_key","TwitterAPIs fallback API key"),("twitterapis_base","TwitterAPIs API base"),("download_dir","Download directory")]
         for key,label in entries:
             w=QLineEdit(str(settings.data.get(key,"")))
             if key.endswith("api_key"): w.setEchoMode(QLineEdit.Password)
             self.fields[key]=w; form.addRow(label,w)
-        self.provider=QComboBox(); self.provider.addItems(["TwitterAPIs","SocialData"]); self.provider.setCurrentText(settings.data.get("timeline_provider","TwitterAPIs")); form.addRow("Public timeline provider",self.provider)
+        self.browser=QComboBox(); self.browser.addItems(["Edge","Chrome","Auto"]); self.browser.setCurrentText(settings.data.get("browser_engine","Edge")); form.addRow("Primary browser",self.browser)
         self.full_history=QCheckBox("Paginate the account activity feed until the provider has no more results"); self.full_history.setChecked(True); self.full_history.setEnabled(False); form.addRow("Historical scan",self.full_history)
-        testrow=QHBoxLayout(); self.test_sd=QPushButton("Test SocialData"); self.test_tw=QPushButton("Test TwitterAPIs"); testrow.addWidget(self.test_sd); testrow.addWidget(self.test_tw); testrow.addStretch(1); layout.addLayout(testrow)
-        self.test_sd.clicked.connect(lambda:self.test("SocialData")); self.test_tw.clicked.connect(lambda:self.test("TwitterAPIs"))
+        testrow=QHBoxLayout(); self.test_tw=QPushButton("Test TwitterAPIs fallback"); testrow.addWidget(self.test_tw); testrow.addStretch(1); layout.addLayout(testrow)
+        self.test_tw.clicked.connect(lambda:self.test("TwitterAPIs"))
         self.cookies=QComboBox(); self.cookies.addItems(["none","edge","chrome","firefox","brave"]); self.cookies.setCurrentText(settings.data.get("browser_cookies","none")); form.addRow("yt-dlp browser cookies",self.cookies)
         self.height=QComboBox(); self.height.addItems(["Best available","2160p","1440p","1080p","720p"])
         h=int(settings.data.get("max_height",0)); self.height.setCurrentText({0:"Best available",2160:"2160p",1440:"1440p",1080:"1080p",720:"720p"}.get(h,"Best available")); form.addRow("Maximum video height",self.height)
-        note=QLabel("Important: TwitterAPIs bookmarks and likes require an active X session registered with TwitterAPIs. SocialData is read-only and does not provide private bookmarks. Do not paste X cookies into this app; register a session only through the provider's documented secure flow. API keys are stored in this app's local settings file.")
+        note=QLabel("Sign in only in the visible X browser window. The app does not ask for or export your cookies. TwitterAPIs fallback features require its API key and any session setup supported by that provider.")
         note.setWordWrap(True); note.setStyleSheet("color:#f0b45b;padding:10px;border:1px solid #5b4826;border-radius:10px;"); layout.addWidget(note)
         buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel); buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
 
@@ -1129,7 +1129,7 @@ class SettingsDialog(QDialog):
 
     def accept(self):
         for key,w in self.fields.items(): self.s.data[key]=w.text().strip()
-        self.s.data["timeline_provider"]=self.provider.currentText()
+        self.s.data["browser_engine"]=self.browser.currentText()
         self.s.data["prefer_full_history"]=self.full_history.isChecked()
         self.s.data["browser_cookies"]=self.cookies.currentText()
         self.s.data["max_height"]={"Best available":0,"2160p":2160,"1440p":1440,"1080p":1080,"720p":720}[self.height.currentText()]
@@ -1359,7 +1359,7 @@ class MainWindow(QMainWindow):
         right.addWidget(self.stats_panel)
         self.api_panel=QFrame(); self.api_panel.setObjectName("panel"); ap=QVBoxLayout(self.api_panel); ap.setContentsMargins(16,14,16,14)
         title=QLabel("Connect an archive engine"); title.setStyleSheet("font-size:17px;font-weight:800;"); ap.addWidget(title)
-        desc=QLabel("Connect SocialData and TwitterAPIs in Settings to scan public timelines and supported account collections."); desc.setWordWrap(True); desc.setObjectName("muted"); ap.addWidget(desc)
+        desc=QLabel("Playwright browser scraper is primary. Sign in to X in the opened Edge/Chrome window; TwitterAPIs is the fallback."); desc.setWordWrap(True); desc.setObjectName("muted"); ap.addWidget(desc)
         btn=QPushButton("Configure engine"); btn.setObjectName("blue"); btn.clicked.connect(self.open_settings); ap.addWidget(btn)
         imp=QPushButton("Import archive JSON"); imp.setObjectName("blue"); imp.clicked.connect(self.import_json); ap.addWidget(imp); right.addWidget(self.api_panel)
         self.activity=QFrame(); self.activity.setObjectName("panel"); al=QVBoxLayout(self.activity); al.setContentsMargins(16,14,16,14)
@@ -1535,7 +1535,7 @@ class MainWindow(QMainWindow):
         self.progress.hide(); self.stop_button.hide(); self.activity_text.setText(message+f"\n{added:,} posts newly archived")
         self.statusBar().showMessage(message,8000); self.refresh()
         if message.startswith("Scan error:"):
-            QMessageBox.warning(self,"Scan failed",message+"\n\nCheck Settings → API Providers, provider credits and session requirements.")
+            QMessageBox.warning(self,"Scan failed",message+"\n\nCheck browser sign-in, Playwright installation, and TwitterAPIs fallback settings.")
 
     def stop_scan(self):
         if hasattr(self,"export_worker") and self.export_worker and self.export_worker.isRunning():
