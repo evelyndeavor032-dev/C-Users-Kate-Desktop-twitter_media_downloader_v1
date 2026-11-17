@@ -405,7 +405,7 @@ class ArchiveDB:
                 mp4_variants = [v for v in variants if v.get("content_type") == "video/mp4" and v.get("url")]
                 if mp4_variants:
                     media_url = max(mp4_variants, key=lambda v: int(v.get("bitrate") or 0)).get("url")
-                    media_type = "video"
+                    media_type = "gif" if str(m.get("type") or m.get("media_type") or "").lower() in ("animated_gif", "gif") else "video"
                 clean_media.append({
                     "url": media_url,
                     "type": media_type,
@@ -1237,7 +1237,7 @@ class MediaViewerDialog(QDialog):
         suffix=Path(target.split('?',1)[0]).suffix.lower() if target else ""
         kind=str(item.get("type","")).lower()
         video_suffixes=(".mp4",".m4v",".mov",".avi",".mkv")
-        is_gif=suffix==".gif" or kind=="gif" or (kind=="animated_gif" and suffix not in video_suffixes)
+        is_gif=suffix==".gif" or (kind in ("gif","animated_gif") and suffix not in video_suffixes)
         is_image=suffix in (".jpg",".jpeg",".png",".webp",".bmp",".gif") or kind in ("photo","image","photo_image")
         try:
             if is_gif:
