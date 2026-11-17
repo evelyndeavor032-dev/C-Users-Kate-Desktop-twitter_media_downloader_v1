@@ -80,10 +80,7 @@ QDialog { background: #000; }
 DEFAULT_SETTINGS = {
     "api_base": "http://127.0.0.1:8000",
     "api_token": "",
-    "socialdata_api_key": "",
     "twitterapis_api_key": "",
-    "timeline_provider": "TwitterAPIs",
-    "socialdata_base": "https://api.socialdata.tools",
     "twitterapis_base": "https://api.twitterapis.com/twitter",
     "timeline_path": "/api/user/{username}/tweets?limit={limit}&include_replies=true",
     "bookmarks_path": "/api/bookmarks?limit={limit}",
@@ -538,7 +535,7 @@ class Settings:
         serializable = self.data.copy()
         try:
             import keyring
-            for key in ("socialdata_api_key", "twitterapis_api_key"):
+            for key in ("twitterapis_api_key",):
                 secret = str(serializable.pop(key, ""))
                 if secret: keyring.set_password(APP_NAME, key, secret)
                 else:
@@ -562,12 +559,7 @@ class ProviderAPIError(RuntimeError):
 
 
 class XApiCompatibleEngine:
-    """Documented adapters for SocialData and TwitterAPIs.
-
-    SocialData is used for public profile/timeline/following/list data. TwitterAPIs
-    is used for public timelines plus account-scoped bookmarks/likes when a session
-    has been registered with that provider. No X login cookies are collected here.
-    """
+    """Browser-first X scraper with TwitterAPIs fallback for supported collections."""
     def __init__(self, settings: Settings):
         self.s = settings
         self.session = requests.Session()
@@ -610,24 +602,6 @@ class XApiCompatibleEngine:
         except requests.RequestException as e:
             raise ProviderAPIError(f"Network/API request failed: {e}") from e
 
-    def _social_profile(self, username):
-        username = username.lstrip("@")
-        if username in self.user_cache: return self.user_cache[username]
-        payload = self._request(self.s.data.get("socialdata_base", "https://api.socialdata.tools"),
-                                f"twitter/user/{quote(username)}", self.s.data.get("socialdata_api_key", ""))
-        profile = payload.get("user") or payload.get("profile") or payload
-        uid = str(profile.get("id_str") or profile.get("id") or profile.get("user_id") or "")
-        if not uid: raise ProviderAPIError("SocialData profile response did not include a numeric user ID.")
-        account = {"username": profile.get("screen_name") or profile.get("username") or username,
-                   "display_name": profile.get("name") or profile.get("display_name") or username,
-                   "bio": profile.get("description") or profile.get("bio"),
-                   "avatar_url": profile.get("profile_image_url_https") or profile.get("avatar_url"),
-                   "banner_url": profile.get("profile_banner_url") or profile.get("banner_url"),
-                   "followers_count": profile.get("followers_count"), "following_count": profile.get("friends_count") or profile.get("following_count"),
-                   "id": uid}
-        self.user_cache[username] = account
-        return account
-
     def _twitter_profile(self, username):
         username = username.lstrip("@")
         payload = self._request(self.s.data.get("twitterapis_base", "https://api.twitterapis.com/twitter"),
@@ -646,17 +620,12 @@ class XApiCompatibleEngine:
         return account
 
     def test_provider(self, provider):
-        if provider == "SocialData":
-            key=self.s.data.get("socialdata_api_key", "")
-            if not key: raise ProviderAPIError("Enter your SocialData API key first.")
-            # Profile endpoint is a safe low-volume validation call.
-            payload=self._request(self.s.data.get("socialdata_base", "https://api.socialdata.tools"), "twitter/user/openai", key)
-            return "SocialData connection successful. Profile endpoint responded."
-        key=self.s.data.get("twitterapis_api_key", "")
-        if not key: raise ProviderAPIError("Enter your TwitterAPIs API key first.")
-        payload=self._request(self.s.data.get("twitterapis_base", "https://api.twitterapis.com/twitter"), "user/info", key, {"username":"OpenAI"})
-        return "TwitterAPIs connection successful. Profile endpoint responded."
-
+        key = self.s.data.get("twitterapis_api_key", "")
+        if not key: raise ProviderAPIError("Enter your TwitterAPIs fallback API key first.")
+        self._request(self.s.data.get("twitterapis_base", "https://api.twitterapis.com/twitter"),
+                      "user/info", key, {"username": "OpenAI"})
+        return "TwitterAPIs fallback connection successful."
+        
     def fetch(self, section: str, username: str, limit: int, cursor: str = "") -> EngineResult:
         tw_base = self.s.data.get("twitterapis_base", "https://api.twitterapis.com/twitter")
         key = self.s.data.get("twitterapis_api_key", "")
