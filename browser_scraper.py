@@ -79,11 +79,14 @@ class BrowserScraper:
         with sync_playwright() as p:
             errors, context = [], None
             channels = ["msedge", "chrome"] if self.browser_name.lower() in ("edge", "auto") else ["chrome", "msedge"]
+            channels.append(None)  # Playwright-managed Chromium fallback
             for channel in channels:
                 try:
-                    context = p.chromium.launch_persistent_context(user_data_dir=str(APP_DATA), channel=channel,
-                        headless=self.headless, viewport={"width":1440,"height":1000},
-                        args=["--disable-blink-features=AutomationControlled"], timeout=self.timeout_ms)
+                    launch_options = {"user_data_dir":str(APP_DATA), "headless":self.headless,
+                        "viewport":{"width":1440,"height":1000},
+                        args=["--disable-blink-features=AutomationControlled"], "timeout":self.timeout_ms}
+                    if channel: launch_options["channel"] = channel
+                    context = p.chromium.launch_persistent_context(**launch_options)
                     break
                 except Exception as exc: errors.append(f"{channel}: {exc}")
             if context is None:
