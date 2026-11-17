@@ -84,7 +84,7 @@ class BrowserScraper:
                 try:
                     launch_options = {"user_data_dir":str(APP_DATA), "headless":self.headless,
                         "viewport":{"width":1440,"height":1000},
-                        args=["--disable-blink-features=AutomationControlled"], "timeout":self.timeout_ms}
+                        "args":["--disable-blink-features=AutomationControlled"], "timeout":self.timeout_ms}
                     if channel: launch_options["channel"] = channel
                     context = p.chromium.launch_persistent_context(**launch_options)
                     break
