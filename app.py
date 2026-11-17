@@ -1099,6 +1099,9 @@ class SettingsDialog(QDialog):
     def accept(self):
         for key,w in self.fields.items(): self.s.data[key]=w.text().strip()
         self.s.data["browser_engine"]=self.browser.currentText()
+        self.s.data.pop("socialdata_api_key", None)
+        self.s.data.pop("socialdata_base", None)
+        self.s.data.pop("timeline_provider", None)
         self.s.data["prefer_full_history"]=self.full_history.isChecked()
         self.s.data["browser_cookies"]=self.cookies.currentText()
         self.s.data["max_height"]={"Best available":0,"2160p":2160,"1440p":1440,"1080p":1080,"720p":720}[self.height.currentText()]
