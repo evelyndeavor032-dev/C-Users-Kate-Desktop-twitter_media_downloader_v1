@@ -19,7 +19,7 @@ from urllib.parse import quote
 
 import requests
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QUrl, QSize
-from PyQt5.QtGui import QFont, QPixmap, QDesktopServices, QMovie
+from PyQt5.QtGui import QFont, QPixmap, QDesktopServices, QMovie, QImageReader
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton, QLineEdit,
     QTextEdit, QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QStackedWidget,
@@ -149,6 +149,129 @@ def normalize_created_at(value: Any) -> str:
 def safe_name(value: str) -> str:
     value = re.sub(r"[^\w.-]+", "_", value, flags=re.UNICODE).strip("._")
     return value[:90] or "unknown"
+
+
+IMAGE_FORMATS = {
+    b"\xff\xd8\xff": (".jpg", "image/jpeg"),
+    b"\x89PNG\r\n\x1a\n": (".png", "image/png"),
+    b"GIF87a": (".gif", "image/gif"),
+    b"GIF89a": (".gif", "image/gif"),
+    b"BM": (".bmp", "image/bmp"),
+    b"II*\x00": (".tif", "image/tiff"),
+    b"MM\x00*": (".tif", "image/tiff"),
+    b"\x00\x00\x01\x00": (".ico", "image/x-icon"),
+}
+
+
+def detect_image_format(data: bytes, content_type: str = "", url: str = ""):
+    """Identify an image by its file signature, never by its URL suffix alone."""
+    head = bytes(data[:64])
+    for signature, result in IMAGE_FORMATS.items():
+        if head.startswith(signature):
+            return result
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp", "image/webp"
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand in (b"avif", b"avis", b"mif1", b"heic", b"heix", b"hevc", b"hevx"):
+            return (".avif" if brand in (b"avif", b"avis") else ".heic"), ("image/avif" if brand in (b"avif", b"avis") else "image/heic")
+    # A response MIME type is only a hint. It is not enough to accept a file
+    # without a recognized signature because CDN error pages can be mislabeled.
+    return None
+
+
+def image_file_is_valid(path: Path) -> bool:
+    """Cheap integrity check used before reusing an old archive image."""
+    try:
+        if not path.is_file() or path.stat().st_size < 16:
+            return False
+        with path.open("rb") as stream:
+            head = stream.read(64)
+        return detect_image_format(head, url=str(path)) is not None
+    except Exception:
+        return False
+
+
+def download_image_response(url: str, target: Path, headers=None, timeout=(20, 120)) -> Path:
+    """Stream an image to disk, verify its signature, and correct its extension.
+
+    The temporary file is never exposed as a completed download. The actual
+    format is derived from the bytes returned by the CDN, so query-string
+    transformations and misleading URL suffixes cannot create mislabeled files.
+    """
+    if not url:
+        raise ValueError("Image URL is empty")
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(target.name + ".part")
+    request_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36",
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        "Referer": "https://x.com/",
+    }
+    if headers:
+        request_headers.update(headers)
+    try:
+        with requests.get(url, headers=request_headers, timeout=timeout, stream=True) as response:
+            response.raise_for_status()
+            content_type = str(response.headers.get("Content-Type", "")).lower()
+            if any(x in content_type for x in ("text/html", "application/json", "text/plain")):
+                raise IOError(f"CDN returned {content_type or 'a text response'} instead of an image")
+            expected = response.headers.get("Content-Length")
+            expected_size = int(expected) if expected and str(expected).isdigit() else None
+            total = 0
+            with temp.open("wb") as out:
+                for chunk in response.iter_content(256 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > 150 * 1024 * 1024:
+                        raise IOError("Image exceeded the 150 MB safety limit")
+                    out.write(chunk)
+            if total < 16:
+                raise IOError("Downloaded image is empty or truncated")
+            if expected_size is not None and total != expected_size:
+                raise IOError(f"Incomplete image download ({total} of {expected_size} bytes)")
+            with temp.open("rb") as stream:
+                signature = stream.read(64)
+            detected = detect_image_format(signature, content_type, url)
+            if not detected:
+                raise IOError(f"Downloaded response is not a recognized image (Content-Type: {content_type or 'unknown'})")
+            extension, _mime = detected
+            # Validate with Qt when its image plugin supports this format. A
+            # missing optional decoder must not corrupt or discard a valid file.
+            try:
+                reader = QImageReader(str(temp))
+                reader.setDecideFormatFromContent(True)
+                if reader.canRead():
+                    image = reader.read()
+                    if image.isNull():
+                        raise IOError("Image decoder rejected the downloaded image")
+            except IOError:
+                raise
+            except Exception:
+                pass
+            final = target.with_suffix(extension)
+            if final.exists():
+                final.unlink()
+            temp.replace(final)
+            return final
+    except Exception:
+        temp.unlink(missing_ok=True)
+        raise
+
+
+def load_image_pixmap(path: str) -> QPixmap:
+    """Decode image content independently of a possibly incorrect file suffix."""
+    reader = QImageReader(str(path))
+    reader.setDecideFormatFromContent(True)
+    image = reader.read()
+    if not image.isNull():
+        return QPixmap.fromImage(image)
+    pixmap = QPixmap()
+    pixmap.load(str(path))
+    return pixmap
+
 
 
 class ArchiveDB:
@@ -709,16 +832,11 @@ class DownloadWorker(QThread):
                 self.progress.emit(f"Downloading media {idx}/{len(items)}")
                 ext = Path(url.split("?")[0]).suffix.lower()
                 media_type = (item.get("type") or "").lower()
-                if ext in (".jpg", ".jpeg", ".png", ".webp", ".gif") or media_type in ("photo", "image", "photo_image"):
+                if ext in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp", ".tif", ".tiff") or media_type in ("photo", "image", "photo_image"):
                     try:
-                        response = requests.get(url, timeout=45, stream=True, headers={"User-Agent":"Mozilla/5.0"})
-                        response.raise_for_status()
-                        image_ext = ext if ext else ".jpg"
-                        target = user_dir / f"{safe_name(self.post.get('post_id','post'))}_{idx}{image_ext}"
-                        with target.open("wb") as out:
-                            for chunk in response.iter_content(1024*128):
-                                if chunk: out.write(chunk)
-                        self.db.record_download(self.post["post_id"], url, target, "complete")
+                        target = user_dir / f"{safe_name(self.post.get('post_id','post'))}_{idx}.jpg"
+                        saved_image = download_image_response(url, target, timeout=(20, 120))
+                        self.db.record_download(self.post["post_id"], url, saved_image, "complete")
                         ok += 1
                     except Exception as ex:
                         self.db.record_download(self.post["post_id"], url, "", "failed", str(ex)); errors.append(str(ex))
@@ -800,7 +918,9 @@ class AccountExportWorker(QThread):
                      ".mp4", ".mov", ".webm", ".mkv", ".mp3", ".m4a",
                      ".aac", ".wav", ".ogg", ".opus", ".flac"}
         direct_cdn = "video.twimg.com" in url.lower() or "pbs.twimg.com" in url.lower()
-        if ext in direct_exts and (direct_cdn or kind in ("image", "other", "audio", "gif", "video")):
+        if kind == "image":
+            return str(download_image_response(url, target, timeout=(20, 120)))
+        if ext in direct_exts and (direct_cdn or kind in ("other", "audio", "gif", "video")):
             headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36",
                      "Accept":"*/*", "Referer":"https://x.com/"}
             temp=target.with_name(target.name+".part")
@@ -937,7 +1057,7 @@ class AccountExportWorker(QThread):
                 self.progress.emit(f"Exporting @{self.username} · post {index}/{len(posts)} · {media_done} media saved")
             # Stable chronological manifest and portable HTML index.
             export_posts.sort(key=lambda x:(x.get("created_at") or "",x.get("post_id") or ""))
-            manifest={"archive_version":"1.2.1","username":self.username,"exported_at":now_iso(),
+            manifest={"archive_version":"1.2.2","username":self.username,"exported_at":now_iso(),
                       "post_count":len(export_posts),"media_count":sum(len(x["media"]) for x in export_posts),
                       "ordering":"oldest_to_newest","account":dict(account) if account else {},"posts":export_posts}
             (root/"Metadata"/"account_archive.json").write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding="utf-8")
@@ -1091,17 +1211,22 @@ class MediaViewerDialog(QDialog):
 
     def _local_media_path(self, item, url):
         path=item.get("local_path") or item.get("path") or ""
-        if path and Path(path).is_file(): return str(Path(path))
+        kind=str(item.get("type") or "").lower()
+        if path and Path(path).is_file():
+            local=Path(path)
+            # Video-backed animated GIFs must remain video files; ordinary
+            # images are reused only when their signature is valid.
+            if local.suffix.lower() not in (".jpg",".jpeg",".png",".webp",".gif",".bmp",".tif",".tiff",".avif",".heic") or image_file_is_valid(local):
+                return str(local)
         if url:
-            response=requests.get(url,headers={"User-Agent":"Mozilla/5.0"},timeout=30)
-            response.raise_for_status()
-            suffix=Path(url.split("?",1)[0]).suffix.lower() or ".bin"
-            if suffix not in (".gif",".jpg",".jpeg",".png",".webp",".bmp"): suffix=".gif" if "gif" in (item.get("type") or "").lower() else ".img"
             cache=DATA_DIR/"media_preview_cache"; cache.mkdir(parents=True,exist_ok=True)
-            target=cache/(safe_name(str(item.get("post_id") or "preview"))+"_"+str(abs(hash(url)))+suffix)
-            if not target.exists(): target.write_bytes(response.content)
-            return str(target)
-        return ""
+            stem=safe_name(str(item.get("post_id") or "preview"))+"_"+str(abs(hash(url)))
+            # X photo URLs may have no suffix or a misleading suffix. Detect
+            # the actual image type from the downloaded bytes before caching.
+            target=cache/(stem+".jpg")
+            saved=download_image_response(url,target,timeout=(20,60))
+            return str(saved)
+        return str(path) if path and Path(path).is_file() else ""
 
     def show_item(self, index):
         if not self.items: return
@@ -1125,12 +1250,12 @@ class MediaViewerDialog(QDialog):
                     else:
                         self.movie.deleteLater(); self.movie=None; self.image.setText("This GIF could not be decoded by the installed Qt image plugins.")
                 elif local:
-                    self.original_pixmap=QPixmap(local); self._render_image()
+                    self.original_pixmap=load_image_pixmap(local); self._render_image()
                 else: self.image.setText("GIF preview unavailable. Download the media first.")
             elif is_image:
                 local=self._local_media_path(item,url)
                 if local:
-                    self.original_pixmap=QPixmap(local)
+                    self.original_pixmap=load_image_pixmap(local)
                     if not self.original_pixmap.isNull(): self._render_image()
                     else: self.image.setText("The image format could not be previewed.")
                 else: self.image.setText("Image preview unavailable. Download the media first.")
