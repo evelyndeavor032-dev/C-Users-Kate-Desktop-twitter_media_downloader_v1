@@ -805,6 +805,41 @@ class DownloadWorker(QThread):
                     except Exception as ex:
                         self.db.record_download(self.post["post_id"], url, "", "failed", str(ex)); errors.append(str(ex))
                     continue
+                # X serves videos and animated GIFs as direct MP4 files on
+                # video.twimg.com. Fetch those bytes directly instead of asking
+                # yt-dlp to discover an extractor for an already-resolved file.
+                direct_ext = Path(url.split("?", 1)[0]).suffix.lower()
+                if "video.twimg.com" in url.lower() and direct_ext in (".mp4", ".m4v", ".mov", ".webm"):
+                    target = user_dir / f"{safe_name(self.post.get('post_id','post'))}_{idx}{direct_ext}"
+                    temp = target.with_name(target.name + ".part")
+                    try:
+                        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36",
+                                   "Accept": "*/*", "Referer": "https://x.com/"}
+                        with requests.get(url, headers=headers, timeout=(20, 120), stream=True) as response:
+                            response.raise_for_status()
+                            content_type = response.headers.get("Content-Type", "").lower()
+                            if "text/html" in content_type or "application/json" in content_type:
+                                raise IOError(f"CDN returned {content_type} instead of video media")
+                            expected = response.headers.get("Content-Length")
+                            expected_size = int(expected) if expected and expected.isdigit() else None
+                            total = 0
+                            with temp.open("wb") as out:
+                                for chunk in response.iter_content(256 * 1024):
+                                    if chunk:
+                                        total += len(chunk)
+                                        out.write(chunk)
+                            if total < 1024:
+                                raise IOError("Downloaded video was empty or truncated")
+                            if expected_size is not None and total != expected_size:
+                                raise IOError(f"Incomplete video download ({total} of {expected_size} bytes)")
+                        temp.replace(target)
+                        self.db.record_download(self.post["post_id"], url, target, "complete")
+                        ok += 1
+                    except Exception as ex:
+                        temp.unlink(missing_ok=True)
+                        self.db.record_download(self.post["post_id"], url, "", "failed", str(ex))
+                        errors.append(str(ex))
+                    continue
                 opts = {
                     "outtmpl": str(user_dir / f"%(id)s_%(title).80B.%(ext)s"),
                     "format": "bestvideo*+bestaudio/best" if int(self.s.data.get("max_height",0)) == 0 else f"best[height<={int(self.s.data['max_height'])}]/best",
