@@ -635,7 +635,7 @@ class XApiCompatibleEngine:
                 scraper = BrowserScraper(self.s.data.get("browser_engine", "Edge"),
                     headless=bool(self.s.data.get("browser_headless", False)),
                     timeout_ms=int(self.s.data.get("request_timeout", 30)) * 1000)
-                posts, account, next_cursor = scraper.fetch_page(username, int(cursor or 0), section)
+                posts, account, next_cursor = scraper.fetch_page(username, int(cursor or 0), section, getattr(self, "stop_check", None))
                 return EngineResult(posts=posts, cursor=next_cursor, account=account)
             except Exception as browser_error:
                 if not key:
@@ -742,6 +742,7 @@ class ScanWorker(QThread):
                     reached_page_cap = False
                     break
                 self.message.emit(f"Fetching {self.section.lower()} · page {page+1}")
+                self.engine.stop_check = lambda: self.stop_requested
                 result = self.engine.fetch(self.section, self.username, self.limit, cursor)
                 if result.account:
                     self._download_profile_assets(result.account)
