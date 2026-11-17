@@ -1,0 +1,29 @@
+name: v3.0.0 build and test
+
+on:
+  push:
+    branches: [v3.0.0-rebuild]
+  workflow_dispatch:
+
+jobs:
+  test-and-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python -m pip install requests
+      - name: Run offline tests
+        run: python -m unittest discover -s tests -v
+      - name: Create source ZIP
+        run: |
+          mkdir -p dist
+          zip -r dist/Twitter_Media_Downloader_v3.0.0_preview.zip . \
+            -x ".git/*" ".github/*" "data/*" "Twitter_Archive/*" "__pycache__/*" "*.pyc"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Twitter-Media-Downloader-v3.0.0-preview
+          path: dist/Twitter_Media_Downloader_v3.0.0_preview.zip
+          if-no-files-found: error
