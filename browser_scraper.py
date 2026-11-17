@@ -113,17 +113,30 @@ class BrowserScraper:
                 if name.count():
                     try: account["display_name"] = name.inner_text(timeout=3000).split("\n")[0]
                     except Exception: pass
-                for _ in range(max(0,page_index)*5):
+                def collect_visible_posts():
+                    try:
+                        for post in _dom_posts(page, username):
+                            found.setdefault(str(post["id"]), post)
+                    except Exception:
+                        pass
+                # The timeline virtualizes/removes cards as it scrolls. Collect
+                # after EVERY scroll rather than only at the end, otherwise the
+                # posts passed during the scroll disappear from the DOM.
+                collect_visible_posts()
+                for _ in range(max(0, page_index) * 5):
                     if stop_check and stop_check(): break
-                    page.mouse.wheel(0,1800); page.wait_for_timeout(850)
+                    page.mouse.wheel(0, 1800); page.wait_for_timeout(850)
+                    collect_visible_posts()
+                before_final_window = set(found)
                 for _ in range(5):
                     if stop_check and stop_check(): break
-                    page.mouse.wheel(0,1500); page.wait_for_timeout(1000)
-                    try:
-                        for post in _dom_posts(page,username): found.setdefault(str(post["id"]),post)
-                    except Exception: pass
-                for post in _dom_posts(page,username): found.setdefault(str(post["id"]),post)
+                    page.mouse.wheel(0, 1500); page.wait_for_timeout(1000)
+                    collect_visible_posts()
                 posts=sorted(found.values(),key=lambda x:int(x.get("id") or 0),reverse=True)
                 if not posts: raise RuntimeError("X loaded but no accessible posts were discovered. Sign in manually and retry.")
-                return posts, account, str(page_index+1) if len(posts)>=5 else None
+                # This is a scroll checkpoint, not an X API cursor. Stop when
+                # another five-scroll window discovers no additional post IDs.
+                new_posts = set(found) - before_final_window
+                next_cursor = str(page_index+1) if new_posts else None
+                return posts, account, next_cursor
             finally: context.close()
