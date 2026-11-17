@@ -81,3 +81,33 @@ The JSON manifest and individual post records are the portable source of truth. 
 
 ### Upgrade note
 Close v1.2.0 before extracting this version. Keep your existing `data` and `Twitter_Archive` folders. Run **Export account** again for the affected account; previously failed media are retried automatically because they were not recorded as completed.
+
+
+## v1.3.0 — Browser-first scraper
+
+The account profile/timeline scan now uses Playwright with a visible Microsoft Edge or
+Google Chrome session as its primary discovery engine. TwitterAPIs remains the
+fallback provider and is used for supported account-scoped collections such as
+bookmarks and likes. SocialData has been removed from the settings and provider flow.
+
+### Browser setup (Windows)
+
+1. Install the Python dependencies: `python -m pip install -r requirements.txt`
+2. Install the Playwright Chromium runtime: `python -m playwright install chromium`
+3. Start the application and begin scanning an account.
+4. If X asks you to sign in, sign in directly in the opened browser window. The app
+   does not ask you to paste cookies or export browser credentials.
+
+The Playwright browser profile is stored locally in
+`%USERPROFILE%\\.twitter_media_downloader\\browser_profile`. It is separate from
+your normal Edge/Chrome profile.
+
+### v1.3.0 notes
+
+- Browser DOM and X page network JSON are both inspected for accessible posts/media.
+- X animated GIF media is retained as GIF metadata while preserving its MP4 container.
+- TwitterAPIs fallback remains available when its key is configured.
+- Existing SQLite archive and download directories are not reset or migrated destructively.
+- X may change its page structure or require sign-in; scans only collect content accessible
+  to the signed-in browser session and do not bypass access controls or challenges.
+- This branch is an implementation preview and still needs Windows runtime validation.
