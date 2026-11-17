@@ -19,15 +19,16 @@ CREATE INDEX IF NOT EXISTS idx_v3_queue_status ON v3_download_queue(status, id);
 
 def _signature(path: Path, media_type: str):
     with path.open("rb") as f: head=f.read(32)
-    if media_type in ("image", "photo", "gif"):
+    if media_type in ("image", "photo"):
         if head.startswith(b"\xff\xd8\xff"): return ".jpg"
         if head.startswith(b"\x89PNG\r\n\x1a\n"): return ".png"
         if head.startswith((b"GIF87a", b"GIF89a")): return ".gif"
         if head.startswith(b"RIFF") and head[8:12] == b"WEBP": return ".webp"
         if len(head)>=12 and head[4:8]==b"ftyp" and head[8:12] in (b"avif",b"avis"): return ".avif"
         raise ValueError("Response is not a recognized image file")
-    if media_type in ("video", "gif_video") or media_type=="gif":
+    if media_type in ("video", "gif_video", "gif"):
         if len(head)>=12 and head[4:8]==b"ftyp": return ".mp4"
+        if media_type == "gif" and head.startswith((b"GIF87a", b"GIF89a")): return ".gif"
         if head.startswith(b"\x1aE\xdf\xa3"): return ".mkv"
         raise ValueError("Response is not a recognized video container")
     if len(head)<16: raise ValueError("Downloaded file is too small")
