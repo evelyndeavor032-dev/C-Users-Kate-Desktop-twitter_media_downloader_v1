@@ -926,17 +926,21 @@ class AccountExportWorker(QThread):
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info=ydl.extract_info(url,download=True)
                 filename=ydl.prepare_filename(info)
-            candidates=[Path(filename), Path(filename).with_suffix(".mp4")]
-            found=next((x for x in candidates if x.is_file()),None)
-            if not found:
-                stem=Path(filename).stem
-                found=next(iter(target.parent.glob(stem+".*")),None)
-            if not found: raise IOError("yt-dlp completed but output file was not found")
-            if found != target: 
-                final=target.with_suffix(found.suffix)
-                if final.exists(): final.unlink()
-                shutil.move(str(found),str(final)); found=final
-            return str(found)
+        # Resolve the actual output after BOTH the normal path and cookie retry.
+        # yt-dlp may merge separate audio/video streams, so prepare_filename()
+        # is not always the final filename; search the post-specific target stem.
+        candidates=[Path(filename), Path(filename).with_suffix(".mp4")]
+        found=next((x for x in candidates if x.is_file() and x.stat().st_size>0),None)
+        if not found:
+            stem=Path(filename).stem
+            found=next((x for x in target.parent.glob(stem+".*") if x.is_file() and x.stat().st_size>0),None)
+        if not found:
+            raise IOError("yt-dlp completed but the downloaded output file was not found")
+        if found.resolve() != target.resolve():
+            final=target.with_suffix(found.suffix)
+            if final.exists(): final.unlink()
+            shutil.move(str(found),str(final)); found=final
+        return str(found)
 
     def run(self):
         try:
