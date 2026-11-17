@@ -18,6 +18,7 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 import requests
+from browser_scraper import BrowserScraper
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QUrl, QSize
 from PyQt5.QtGui import QFont, QPixmap, QDesktopServices, QMovie, QImageReader
 from PyQt5.QtWidgets import (
@@ -657,49 +658,42 @@ class XApiCompatibleEngine:
         return "TwitterAPIs connection successful. Profile endpoint responded."
 
     def fetch(self, section: str, username: str, limit: int, cursor: str = "") -> EngineResult:
-        provider = self.s.data.get("timeline_provider", "TwitterAPIs")
-        sd_base=self.s.data.get("socialdata_base", "https://api.socialdata.tools")
-        tw_base=self.s.data.get("twitterapis_base", "https://api.twitterapis.com/twitter")
-        account=None
-        if section in ("Home", "Explore", "Follow", "Lists"):
-            # SocialData has the broadest documented public profile/list/following surface.
-            if section in ("Follow", "Lists") or provider == "SocialData":
-                account=self._social_profile(username)
-                if section == "Follow": path=f"twitter/user/{account['id']}/following"
-                elif section == "Lists": path=f"twitter/user/{account['id']}/lists"
-                else: path=f"twitter/user/{account['id']}/tweets-and-replies"
-                params={"cursor":cursor} if cursor else {}
-                payload=self._request(sd_base,path,self.s.data.get("socialdata_api_key", ""),params)
-            else:
-                account=self._twitter_profile(username)
-                # One canonical activity feed contains originals, the account's own
-                # replies and reposts. We classify locally into X's profile tabs.
-                # Cursor pagination avoids a second overlapping endpoint/cost.
-                path="user/tweets_and_replies"; params={"username":username.lstrip("@"),"user_id":account['id'],"count":limit}
-                if cursor: params["cursor"]=cursor
-                payload=self._request(tw_base,path,self.s.data.get("twitterapis_api_key", ""),params)
-        elif section == "Bookmarks":
-            # Bookmarks are private to the registered session at TwitterAPIs.
-            params={"count":min(limit,100)}
-            if cursor: params["cursor"]=cursor
-            payload=self._request(tw_base,"user/bookmarks",self.s.data.get("twitterapis_api_key", ""),params)
+        tw_base = self.s.data.get("twitterapis_base", "https://api.twitterapis.com/twitter")
+        key = self.s.data.get("twitterapis_api_key", "")
+        account = None
+        if section in ("Home", "Explore"):
+            try:
+                scraper = BrowserScraper(self.s.data.get("browser_engine", "Edge"),
+                    headless=bool(self.s.data.get("browser_headless", False)),
+                    timeout_ms=int(self.s.data.get("request_timeout", 30)) * 1000)
+                posts, account, next_cursor = scraper.fetch_page(username, int(cursor or 0), section)
+                return EngineResult(posts=posts, cursor=next_cursor, account=account)
+            except Exception as browser_error:
+                if not key:
+                    raise ProviderAPIError("Browser scraper failed: " + str(browser_error) +
+                        "\nTwitterAPIs fallback is not configured. Add its API key in Settings or sign in to X in the opened browser.") from browser_error
+                try:
+                    account = self._twitter_profile(username)
+                    params = {"username": username.lstrip("@"), "user_id": account["id"], "count": limit}
+                    if cursor: params["cursor"] = cursor
+                    payload = self._request(tw_base, "user/tweets_and_replies", key, params)
+                    return EngineResult(posts=self._extract_items(payload), cursor=self._cursor(payload), account=account)
+                except Exception as api_error:
+                    raise ProviderAPIError("Browser scraper failed: " + str(browser_error) +
+                        "\nTwitterAPIs fallback failed: " + str(api_error)) from api_error
+        if section == "Bookmarks":
+            params = {"count": min(limit, 100)}
+            if cursor: params["cursor"] = cursor
+            payload = self._request(tw_base, "user/bookmarks", key, params)
         elif section == "Likes":
-            if provider == "SocialData":
-                account=self._social_profile(username)
-                path=f"twitter/user/{account['id']}/likes"
-                payload=self._request(sd_base,path,self.s.data.get("socialdata_api_key", ""),{"cursor":cursor} if cursor else {})
-            else:
-                account=self._twitter_profile(username)
-                params={"user_id":account['id'],"count":min(limit,100)}
-                if cursor: params["cursor"]=cursor
-                payload=self._request(tw_base,"user/likes",self.s.data.get("twitterapis_api_key", ""),params)
+            account = self._twitter_profile(username)
+            params = {"user_id": account["id"], "count": min(limit, 100)}
+            if cursor: params["cursor"] = cursor
+            payload = self._request(tw_base, "user/likes", key, params)
         else:
-            raise ProviderAPIError(f"{section} is not yet wired to a live provider endpoint.")
-        items=self._extract_items(payload)
-        # Provider profile/list responses are not post objects; only post collections enter the timeline DB.
-        if section in ("Follow", "Lists"):
-            raise ProviderAPIError(f"{section} data was retrieved, but v1.1 currently stores post objects only. Account/list browser support is the next archive schema upgrade.")
-        return EngineResult(posts=items,cursor=self._cursor(payload),account=account)
+            raise ProviderAPIError(f"{section} is not supported by the browser engine or TwitterAPIs fallback.")
+        return EngineResult(posts=self._extract_items(payload), cursor=self._cursor(payload), account=account)
+
 
 
 class ScanWorker(QThread):
