@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from v3core.x_parser import extract_posts
 
 APP_DATA = Path.home() / ".twitter_media_downloader" / "browser_profile"
 
@@ -98,7 +99,8 @@ class BrowserScraper:
                     try:
                         if "json" not in response.headers.get("content-type","").lower(): return
                         if not any(t in response.url.lower() for t in ("graphql","timeline","tweet","user")): return
-                        _walk_tweets(response.json(), found)
+                        for post in extract_posts(response.json()):
+                            found.setdefault(str(post['id']), post)
                     except Exception: pass
                 page.on("response", on_response)
                 page.goto(f"https://x.com/{username}", wait_until="domcontentloaded", timeout=self.timeout_ms)
